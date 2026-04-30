@@ -7,8 +7,12 @@ VirtualNetworkClient classes from oci_utils.py.
 """
 from dataclasses import dataclass
 from typing import Dict, List, Optional
+from unittest.mock import MagicMock, patch
 
 import pytest
+
+from ha_script.oci.api import OCIClient
+from ha_script.oci.auth import RequestSigner
 
 
 class MockComputeClient:
@@ -404,3 +408,14 @@ def mock_send_event_to_smc(monkeypatch: pytest.MonkeyPatch):
        'ha_script.smc_events.send_event_to_smc',
        lambda *args, **_: print(*args)
     )
+
+
+@pytest.fixture
+def oci_client():
+    """Create an OCIClient with mocked dependencies."""
+    signer = MagicMock(spec=RequestSigner)
+    signer.side_effect = lambda r: r
+    with patch("ha_script.oci.metadata.get_instance_region",
+               return_value="us-phoenix-1"):
+        client = OCIClient("iaas", signer)
+    return client

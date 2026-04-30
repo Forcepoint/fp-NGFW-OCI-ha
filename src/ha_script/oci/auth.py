@@ -75,6 +75,13 @@ class RequestSigner(requests.auth.AuthBase):
         self.credentials: Optional[Token] = None
         self.token: Optional[Token] = None
 
+    def invalidate(self) -> None:
+        """Discard the cached token, forcing re-acquisition on next use."""
+        if self.token:
+            LOGGER.debug("Invalidating existing token")
+        self.credentials = None
+        self.token = None
+
     def __call__(self,
                  r: requests.PreparedRequest) -> requests.PreparedRequest:
         if not r.method or not r.url:
