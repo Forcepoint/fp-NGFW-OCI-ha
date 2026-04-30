@@ -2,7 +2,7 @@ import io
 import sys
 import logging
 import ipaddress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Union
 
 import ha_script
@@ -81,8 +81,15 @@ class HAScriptConfig:
     # WAN nic index that receives public traffic from internet defaults to 0
     wan_nic_idx: int = 1
 
-    # Reserved public IP OCID used for movable IP. Requires wan_nic_idx.
-    reserved_public_ip_id: str = ""
+    # Reserved public IPs to move during failover. Collected from config keys
+    # matching reserved_public_ip_<name>. Two value formats are accepted; the
+    # two cannot be mixed in a single configuration.
+    #  - Triplet "pub_ip,primary_priv_ip,secondary_priv_ip" (recommended):
+    #    required when declaring multiple reserved public IPs.
+    #  - OCID (e.g. "ocid1.publicip...", deprecated): routed to the private
+    #    IP on wan_nic_idx. At most one OCID-format entry is allowed. Will
+    #    be removed in a future release.
+    reserved_public_ips: dict[str, str] = field(default_factory=dict)
 
     # set to true to disable the script
     disabled: bool = False
@@ -161,11 +168,45 @@ def _validate_config(config_data: dict[str, Any]) -> None:
             f"{config_data['route_table_id']}"
         )
 
-    reserved_public_ip_id = config_data.get("reserved_public_ip_id")
-    if reserved_public_ip_id and not reserved_public_ip_id.startswith("ocid"):
+    reserved_public_ips = config_data.get("reserved_public_ips", {})
+    ocid_entries: list[str] = []
+    triplet_entries: list[str] = []
+    for name, value in reserved_public_ips.items():
+        if value.startswith("ocid"):
+            # OCID format: routed via wan_nic_idx
+            ocid_entries.append(name)
+            continue
+        triplet_entries.append(name)
+        # Tuple format: pub_ip,primary_priv_ip,secondary_priv_ip
+        parts = [part.strip() for part in value.split(",")]
+        if len(parts) != 3:
+            raise HAScriptConfigError(
+                f"Value for 'reserved_public_ip_{name}' must be an OCID "
+                f"or 3 comma-separated IP addresses: {value!r}"
+            )
+        for part in parts:
+            try:
+                ipaddress.ip_address(part)
+            except ValueError:
+                raise HAScriptConfigError(
+                    f"Value for 'reserved_public_ip_{name}' contains "
+                    f"invalid IP address: {part}"
+                )
+    if len(ocid_entries) > 1:
         raise HAScriptConfigError(
-            f"Value for 'reserved_public_ip_id' should start with 'ocid': "
-            f"{reserved_public_ip_id}"
+            f"Only one OCID-format reserved_public_ip is allowed (found: "
+            f"{', '.join(f'reserved_public_ip_{n}' for n in ocid_entries)}). "
+            f"Use the 'pub_ip,primary_priv_ip,secondary_priv_ip' format to "
+            f"declare multiple reserved public IPs."
+        )
+    if ocid_entries and triplet_entries:
+        raise HAScriptConfigError(
+            f"Cannot mix OCID and triplet formats for reserved_public_ip "
+            f"entries. OCID: "
+            f"{', '.join(f'reserved_public_ip_{n}' for n in ocid_entries)}; "
+            f"triplet: "
+            f"{', '.join(f'reserved_public_ip_{n}' for n in triplet_entries)}. "
+            f"Use the triplet format for all entries."
         )
 
     if config_data.get("probe_ip"):
@@ -241,6 +282,18 @@ def load_config(tags: dict[str, Any]) -> HAScriptConfig:
         if key in ("probe_enabled", "remote_probe_enabled",
                    "disabled", "dry_run"):
             config_data[key] = value.lower() == "true"
+
+    # Extract reserved_public_ip_* keys into a dict before constructing
+    # the dataclass (they are not individual dataclass fields).
+    reserved_public_ips: dict[str, str] = {}
+    pub_ip_keys = [
+        k for k in config_data if k.startswith("reserved_public_ip_")
+    ]
+    for key in pub_ip_keys:
+        name = key[len("reserved_public_ip_"):]
+        reserved_public_ips[name] = config_data.pop(key)
+    if reserved_public_ips:
+        config_data["reserved_public_ips"] = reserved_public_ips
 
     _validate_config(config_data)
     config = HAScriptConfig(**config_data)

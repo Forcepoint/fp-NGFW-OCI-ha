@@ -2,7 +2,7 @@ import json
 import logging
 import time
 import urllib.parse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 from collections.abc import Iterator
 
@@ -31,23 +31,19 @@ WR_TIMEOUT = 120       # maximum wait in seconds
 
 @dataclass
 class LocalNetContext:
-    # Internal network interface ID as seen from cloud. Resolved on startup.
+    # All values here are resolved on startup.
+
+    # Internal network interface ID as seen from cloud.
     internal_nic_id: str
 
-    # Internal network interface ID as seen from cloud. Resolved on startup.
-    wan_nic_id: str
-
-    # Internal network private IP address. Resolved on startup.
+    # Internal network private IP address.
     internal_ip: str
 
-    # Internal network private IP address OCID. Resolved on startup.
+    # Internal network private IP address OCID.
     internal_ip_id: str
 
-    # WAN network private IP address. Resolved on startup.
-    wan_ip: Optional[str] = None
-
-    # WAN network private IP address OCID. Resolved on startup.
-    wan_ip_id: Optional[str] = None
+    # [(public_ip_ocid, target_private_ip_ocid, public_ip_address), ...]
+    public_ip_targets: list[tuple[str, str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -282,6 +278,12 @@ class VirtualNetworkClient(OCIClient):
             {"privateIpId": private_ip_id},
         )
 
+    def get_public_ip_by_ip_address(self, ip_address: str) -> Any:
+        return self.post(
+            f"/{OCI_API_VERSION}/publicIps/actions/getByIpAddress",
+            {"ipAddress": ip_address},
+        )
+
     def update_public_ip(self, public_ip_id: str,
                          private_ip_id: Optional[str]) -> Any:
         return self.put(
@@ -429,11 +431,13 @@ def set_config_tag(
 
 
 def create_local_net_context(config: HAScriptConfig,
-                             clients: OCIClients) -> LocalNetContext:
+                             clients: OCIClients,
+                             is_primary: bool = True) -> LocalNetContext:
     """Create a context out of the instance networking
 
     :param config: configuration from the main program
     :param clients: OCI clients
+    :param is_primary: True if this instance is the primary
     :return: Instance of LocalNetContext
     :raises HAScriptError: if the OCI instance does not have a VNIC with the
                            given device index
@@ -464,32 +468,70 @@ def create_local_net_context(config: HAScriptConfig,
             f"Failed to find VNIC '{internal_nic_id}' private IP"
         )
 
-    try:
-        vnic = vnics[config.wan_nic_idx]
-    except IndexError:
-        raise HAScriptError(
-            f"Out of bounds wan_nic_idx '{config.wan_nic_idx}. "
-            f"Make sure this instance has the expected vnics attached."
-        )
-    wan_nic_id = vnic["vnicId"]
-    wan_ip = vnic.get("privateIp")
-    if not wan_ip:
-        raise HAScriptError(f"Failed to find VNIC '{wan_nic_id}' private IP")
+    # Build IP address → OCID map across all VNICs for public IP resolution
+    ip_to_id: dict[str, str] = {}
+    for v in vnics:
+        for p in vcn_client.list_private_ips(v["vnicId"]):
+            ip_to_id[p["ipAddress"]] = p["id"]
 
-    for private_ip in vcn_client.list_private_ips(wan_nic_id):
-        if private_ip["ipAddress"] == wan_ip:
-            wan_ip_id = private_ip["id"]
-            break
-    else:
-        raise HAScriptError(f"Failed to find VNIC '{wan_nic_id}' private IP")
+    # Resolve public IP targets from config
+    public_ip_targets: list[tuple[str, str, str]] = []
+    for name, value in config.reserved_public_ips.items():
+        if value.startswith("ocid"):
+            # OCID format: route to private IP on wan_nic_idx VNIC
+            try:
+                wan_vnic = vnics[config.wan_nic_idx]
+            except IndexError:
+                raise HAScriptError(
+                    f"Out of bounds wan_nic_idx '{config.wan_nic_idx}' for "
+                    f"'reserved_public_ip_{name}'. "
+                    f"Make sure this instance has the expected vnics attached."
+                )
+            wan_ip = wan_vnic.get("privateIp")
+            if not wan_ip or wan_ip not in ip_to_id:
+                raise HAScriptError(
+                    f"Failed to find WAN VNIC private IP for "
+                    f"'reserved_public_ip_{name}'"
+                )
+            try:
+                pub_ip = vcn_client.get_public_ip(value)
+            except Exception as e:
+                raise HAScriptError(
+                    f"Failed to resolve 'reserved_public_ip_{name}' "
+                    f"'{value}': {e}"
+                ) from e
+            ip_address = pub_ip.get("ipAddress", "")
+            public_ip_targets.append((value, ip_to_id[wan_ip], ip_address))
+        else:
+            # Tuple format: pub_addr,primary_priv_addr,secondary_priv_addr
+            parts = [part.strip() for part in value.split(",")]
+            pub_addr, primary_priv_addr, secondary_priv_addr = parts
+            if is_primary:
+                my_priv_addr = primary_priv_addr
+            else:
+                my_priv_addr = secondary_priv_addr
+            if my_priv_addr not in ip_to_id:
+                raise HAScriptError(
+                    f"Private IP '{my_priv_addr}' from "
+                    f"'reserved_public_ip_{name}' not found on any VNIC"
+                )
+            try:
+                pub_ip = vcn_client.get_public_ip_by_ip_address(pub_addr)
+                pub_ip_id = pub_ip["id"]
+            except Exception as e:
+                raise HAScriptError(
+                    f"Failed to resolve public IP '{pub_addr}' for "
+                    f"'reserved_public_ip_{name}': {e}"
+                ) from e
+            public_ip_targets.append(
+                (pub_ip_id, ip_to_id[my_priv_addr], pub_addr)
+            )
 
     ctx = LocalNetContext(
         internal_nic_id=internal_nic_id,
         internal_ip=internal_ip,
         internal_ip_id=internal_ip_id,
-        wan_nic_id=wan_nic_id,
-        wan_ip=wan_ip,
-        wan_ip_id=wan_ip_id,
+        public_ip_targets=public_ip_targets,
     )
     LOGGER.info("created local network context: %s", ctx)
     return ctx
@@ -614,7 +656,7 @@ def update_route_table(
             LOGGER.info(
                 "Modifying route, dest: %s, internal_ip_id: %s",
                 dest,
-                local_net_ctx.internal_ip,
+                local_net_ctx.internal_ip_id,
             )
         rules.append(rule)
 
@@ -632,75 +674,104 @@ def update_route_table(
     return True
 
 
-def resolve_public_ip(
-    config: HAScriptConfig,
-    clients: OCIClients
-) -> tuple[Optional[str], Optional[str]]:
-    """Get a public IP and its assigned private IP
+def resolve_public_ip(clients: OCIClients, public_ip_id: str) -> Optional[str]:
+    """Get the current assignee of a public IP.
 
-    :param config: configuration from the main program
     :param clients: OCI clients
-    :return: tuple of public IP address and assigned entity id
+    :param public_ip_id: OCID of the reserved public IP
+    :return: OCID of the private IP currently assigned, or None
     """
-    public_ip = clients[1].get_public_ip(config.reserved_public_ip_id)
-    return public_ip.get("ipAddress"), public_ip.get("assignedEntityId")
+    vcn_client = clients[1]
+    pub_ip = vcn_client.get_public_ip(public_ip_id)
+    return pub_ip.get("assignedEntityId")
 
 
 def move_public_ip(
     config: HAScriptConfig,
     clients: OCIClients,
-    local_net_ctx: LocalNetContext
+    public_ip_id: str,
+    target_private_ip_id: str,
 ) -> bool:
-    """Move reserved public IP defined in config to the local instance
+    """Move reserved public IP to the given private IP
 
     :param config: configuration from the main program
     :param clients: OCI clients
-    :param local_net_ctx: Local network context
+    :param public_ip_id: OCID of the reserved public IP to move
+    :param target_private_ip_id: target private IP OCID
     :return: True if the move is successful, False otherwise.
     """
     vcn_client = clients[1]
-    public_ip_id = config.reserved_public_ip_id
-    public_ip = vcn_client.get_public_ip(public_ip_id)
+    dest_ip_id = target_private_ip_id
+
+    try:
+        public_ip = vcn_client.get_public_ip(public_ip_id)
+    except Exception as e:
+        send_error_to_smc(
+            config, f"Failed to get public IP '{public_ip_id}': {e}")
+        return False
+
+    ip_addr = public_ip['ipAddress']
 
     if config.dry_run:
         LOGGER.warning(
             "DRY-RUN: Do not move public ip, dest: %s, internal_ip_id: %s",
-            public_ip['ipAddress'],
-            local_net_ctx.wan_ip_id,
+            ip_addr, dest_ip_id,
         )
         return True
 
-    if not local_net_ctx.wan_ip_id:
-        raise ValueError("move_public_ip() called with incomplete context")
+    if not dest_ip_id:
+        send_error_to_smc(
+            config, "move_public_ip() called with incomplete context")
+        return False
 
-    LOGGER.info(f"Moving public IP '{public_ip['ipAddress']}' to "
-                f"'{local_net_ctx.wan_ip_id}'.")
+    LOGGER.info(f"Moving public IP '{ip_addr}' to '{dest_ip_id}'.")
     try:
-        vcn_client.update_public_ip(public_ip_id, local_net_ctx.wan_ip_id)
+        vcn_client.update_public_ip(public_ip_id, dest_ip_id)
     except requests.HTTPError as e:
-        if e.response is None:
-            raise
-        if e.response.status_code != 409:
-            raise
+        if e.response is None or e.response.status_code != 409:
+            send_error_to_smc(
+                config, f"Failed to move public IP '{ip_addr}': {e}")
+            return False
 
         # In case an instance already has an ephemeral public IP, release it
         # and assign the reserved IP instead.  This is to support instances
         # that were started with auto assigned public IP address.
-        assigned_ip = vcn_client.get_public_ip_by_private_ip_id(
-            local_net_ctx.wan_ip_id
-        )
+        try:
+            assigned_ip = vcn_client.get_public_ip_by_private_ip_id(
+                dest_ip_id)
+        except Exception as inner:
+            send_error_to_smc(
+                config,
+                f"Failed to move public IP '{ip_addr}': "
+                f"409 conflict and unable to resolve: {inner}")
+            return False
+
         if assigned_ip["lifetime"] != "EPHEMERAL":
             LOGGER.debug("Refusing to remove non-ephemeral public IP")
-            raise
+            send_error_to_smc(
+                config,
+                f"Failed to move public IP '{ip_addr}': "
+                f"target already has a non-ephemeral public IP")
+            return False
 
-        LOGGER.info(f"Private IP '{local_net_ctx.wan_ip_id}' already "
+        LOGGER.info(f"Private IP '{dest_ip_id}' already "
                     f"has a public IP assigned {assigned_ip['ipAddress']}. "
                     f"Replacing with configured reserved IP.")
-        vcn_client.delete_public_ip(assigned_ip["id"])
-        vcn_client.update_public_ip(public_ip_id, local_net_ctx.wan_ip_id)
+        try:
+            vcn_client.delete_public_ip(assigned_ip["id"])
+            vcn_client.update_public_ip(public_ip_id, dest_ip_id)
+        except Exception as inner:
+            send_error_to_smc(
+                config,
+                f"Failed to move public IP '{ip_addr}' "
+                f"after removing ephemeral IP: {inner}")
+            return False
+    except Exception as e:
+        send_error_to_smc(
+            config, f"Failed to move public IP '{ip_addr}': {e}")
+        return False
 
-    LOGGER.info(f"Public IP '{public_ip['ipAddress']}' has been moved to "
-                f"'{local_net_ctx.wan_ip_id}'.")
+    LOGGER.info(f"Public IP '{ip_addr}' has been moved to '{dest_ip_id}'.")
     return True
 
 

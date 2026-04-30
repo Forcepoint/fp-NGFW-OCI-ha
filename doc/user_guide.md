@@ -24,7 +24,7 @@ criteria, it takes action to become active and receive the traffic:
 
 - It modifies the OCI route table from the internal network(s) to point to
   the secondary
-- Optionally, it moves a reserved public IP address to the secondary
+- Optionally, it moves one or more reserved public IP addresses to the secondary
 
 ## Operation
 
@@ -36,7 +36,7 @@ The diagram below shows how the HA script operates:
   freeform tag.
 - On the secondary NGFW instance, the script monitors the primary instance
   (TCP probing). If such probing fails, the secondary takes over by
-  re-routing traffic to itself and optionally moving the public IP.
+  re-routing traffic to itself and optionally moving the public IP(s).
 
 ![](./ha_script-operations.png)
 
@@ -75,22 +75,39 @@ The following configuration properties are optional.
 
 #### Moveable public IP
 
-| Property                  | Example                       | Default     | Description                                                                             |
-|---------------------------|-------------------------------|-------------|-----------------------------------------------------------------------------------------|
-| reserved_public_ip_id     | ocid1.publicip.oc1.iad.aaaa...|             | Reserved public IP OCID to move during failover. Requires matching wan_nic_idx.         |
-| wan_nic_idx               | 1                             | 1           | WAN NIC (VNIC) index that receives public traffic. Required with reserved_public_ip_id. |
+| Property                        | Example                            | Default | Description                                                                                                                                                                    |
+|---------------------------------|------------------------------------|---------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| reserved_public_ip_\<name\> [1] | 203.0.113.10,10.0.12.10,10.0.22.10 |         | Reserved public IP to move during failover. Triplet format `public_ip,primary_private_ip,secondary_private_ip`, or an OCID value. Multiple entries require the triplet format. |
+| wan_nic_idx                     | 1                                  | 1       | WAN NIC (VNIC) index. Used by the OCID format of `reserved_public_ip_<name>` to identify the target VNIC. Ignored by the triplet format.                                       |
+
+[1] Two value formats are accepted. The two formats cannot be mixed in a
+single configuration: every `reserved_public_ip_<name>` entry must use the
+same format.
+
+**Triplet format**: `public_ip,primary_private_ip,secondary_private_ip`.
+This is the reserved public IP address, the target private IP on the
+primary instance, and the target private IP on the secondary instance.
+Multiple public IPs are supported by adding multiple properties with
+different names (e.g. `reserved_public_ip_vpn`, `reserved_public_ip_web`).
+
+**OCID format**: a single OCID value (e.g.
+`ocid1.publicip.oc1.iad.aaaa...`). The reserved public IP is moved to the
+primary private IP of the VNIC at `wan_nic_idx` (default 1). Only one
+OCID-format entry may be defined per configuration. Use this format for a
+shorter configuration when a single reserved public IP is sufficient and
+the default NIC indexing applies; otherwise use the triplet format.
 
 #### Probing from Secondary to Primary
 
 | Property          | Example                 | Default | Description                                                                                                                                                                           |
 |-------------------|-------------------------|---------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | probe_enabled     | true                    | true    | Specifies whether TCP probing mechanism is enabled. Possible values are "true" or "false".                                                                                            |
-| probe_ip [1]      | 10.101.0.254,10.0.0.254 |         | A comma-separated list of private IP addresses of the Primary Engine used for probing.                                                                                                |
+| probe_ip [2]      | 10.101.0.254,10.0.0.254 |         | A comma-separated list of private IP addresses of the Primary Engine used for probing.                                                                                                |
 | probe_port        | 2222                    | 22      | The TCP port used by the Secondary to probe the Primary. **Note** TCP connections to this port must be allowed in the security rules.                                                 |
 | probe_timeout_sec | 2                       | 2       | Timeout in seconds after an attempt by the Secondary to connect to the Primary is declared as failed.                                                                                 |
 | probe_max_fail    | 10                      | 10      | The number of consecutive failed attempts by the Secondary to connect to the Primary before starting the switchover procedure (the time will be probe_max_fail * check_interval_sec). |
 
-[1] Comma-separated list of private IP addresses of the Primary SD-WAN
+[2] Comma-separated list of private IP addresses of the Primary SD-WAN
 Engine used for probing. If unspecified, all IP addresses of the Primary
 VNICs will be used. If none of these addresses respond to the probe, the
 Secondary will take over by changing the OCI route table to the local
@@ -103,12 +120,12 @@ is not considered).
 | Property             | Example                 | Default | Description                                                                                                                                                                          |
 |----------------------|-------------------------|---------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | remote_probe_enabled | true                    | false   | Specifies whether TCP probing mechanism from the Primary to the Remote host(s) is enabled (e.g. to make sure SD-WAN is working properly). Possible values are "true" or "false".     |
-| remote_probe_ip [2]  | 10.100.0.10,10.101.0.10 |         | A comma-separated list of private IP addresses of remote host(s).                                                                                                                    |
+| remote_probe_ip [3]  | 10.100.0.10,10.101.0.10 |         | A comma-separated list of private IP addresses of remote host(s).                                                                                                                    |
 | remote_probe_port    | 8080                    | 80      | Remote port to probe.                                                                                                                                                                |
 | probe_timeout_sec    | 2                       | 2       | Timeout in seconds after an attempt by the Primary to connect Remote hosts is declared as failed.                                                                                    |
 | probe_max_fail       | 10                      | 10      | The number of consecutive failed attempts by the Primary to connect to Remote hosts before starting the switchover procedure (the time will be probe_max_fail * check_interval_sec). |
 
-[2] A comma-separated list of Remote hosts (accessible via the SD-WAN)
+[3] A comma-separated list of Remote hosts (accessible via the SD-WAN)
 private IP addresses that the Primary Engine probes periodically to make
 sure the SD-WAN tunnel is still up. If none of these addresses responds to
 the probe, the Primary will hand off to the Secondary by putting itself
@@ -174,10 +191,10 @@ appear in the OCI instance metadata:
   protected subnet route tables. During failover the HA script updates the
   route table to point to the **private IP OCID** of this VNIC on the newly
   active instance.
-- **WAN VNIC** (`wan_nic_idx`): Faces the public internet. When a
-  `reserved_public_ip_id` is configured, the HA script reassigns the
-  reserved public IP to the **private IP OCID** of this VNIC on the newly
-  active instance.
+- **WAN VNIC** (`wan_nic_idx`): Faces the public internet. Used by the
+  OCID format of `reserved_public_ip_<name>` to locate the target VNIC.
+  Ignored by the triplet format, which specifies target private IPs
+  explicitly in the configuration.
 
 Both the primary and secondary instances must use the same NIC index
 layout. Ensure that:
@@ -187,6 +204,8 @@ layout. Ensure that:
 3. VNIC attachments are in the **ATTACHED** lifecycle state.
 4. The internal VNIC's subnet is associated with the route table(s)
    specified in `route_table_id`.
+5. When using `reserved_public_ip_<name>`, each instance must have the
+   private IPs specified in the triplet assigned to one of its VNICs.
 
 If `probe_ip` is not explicitly set, the secondary discovers the primary's
 probe addresses by enumerating all VNICs attached to the primary instance
@@ -212,8 +231,10 @@ to maintain a single IPsec contact address for the replicated nodes.
 - **Reserved**: Can be moved between instances, maintained independently
 
 The HA script can only manage Reserved public IPs, moving them between primary
-and secondary instances during failover.  This reserved public IP is configured
-through `reserved_public_ip_id`.
+and secondary instances during failover. Each reserved public IP is configured
+via a `reserved_public_ip_<name>` property using the IP triplet format
+(`public_ip,primary_private_ip,secondary_private_ip`). Multiple public IPs
+are supported by adding multiple named properties.
 
 #### Security Rules
 
@@ -251,10 +272,10 @@ Example configuration properties:
 ```
 route_table_id: ocid1.routetable.oc1.iad.aaaaaaaa...
 internal_nic_idx: 0
-wan_nic_idx: 1
 primary_instance_id: ocid1.instance.oc1.iad.aaaaaaaa...
 secondary_instance_id: ocid1.instance.oc1.iad.bbbbbbbb...
-reserved_public_ip_id: ocid1.publicip.oc1.iad.cccccccc...
+reserved_public_ip_vpn: 203.0.113.10,10.0.12.10,10.0.22.10
+reserved_public_ip_web: 203.0.113.20,10.0.12.11,10.0.22.11
 probe_enabled: true
 probe_port: 22
 se_script_path: /data/config/hooks/policy-applied/99_oci_ha_script_installer.py
@@ -350,7 +371,7 @@ FP_HA_probe_port: 22
 
 ### Example Configuration with a moveable IP
 
-Configuration that updates routes AND moves public IP:
+Configuration that updates routes AND moves public IP(s):
 
 **Primary Instance Tags:**
 ```
@@ -358,8 +379,8 @@ FP_HA_route_table_id: ocid1.routetable.oc1.iad.aaaaaa...
 FP_HA_primary_instance_id: ocid1.instance.oc1.iad.primary...
 FP_HA_secondary_instance_id: ocid1.instance.oc1.iad.secondary...
 FP_HA_internal_nic_idx: 0
-FP_HA_wan_nic_idx: 1
-FP_HA_reserved_public_ip_id: ocid1.publicip.oc1.iad.reserved...
+FP_HA_reserved_public_ip_vpn: 203.0.113.10,10.0.12.10,10.0.22.10
+FP_HA_reserved_public_ip_web: 203.0.113.20,10.0.12.11,10.0.22.11
 FP_HA_probe_enabled: true
 FP_HA_probe_port: 22
 ```
@@ -370,8 +391,8 @@ FP_HA_route_table_id: ocid1.routetable.oc1.iad.aaaaaa...
 FP_HA_primary_instance_id: ocid1.instance.oc1.iad.primary...
 FP_HA_secondary_instance_id: ocid1.instance.oc1.iad.secondary...
 FP_HA_internal_nic_idx: 0
-FP_HA_wan_nic_idx: 1
-FP_HA_reserved_public_ip_id: ocid1.publicip.oc1.iad.reserved...
+FP_HA_reserved_public_ip_vpn: 203.0.113.10,10.0.12.10,10.0.22.10
+FP_HA_reserved_public_ip_web: 203.0.113.20,10.0.12.11,10.0.22.11
 FP_HA_probe_enabled: true
 FP_HA_probe_port: 22
 ```
@@ -473,14 +494,14 @@ Script* procedure described above.
 
 If the OCI HA script performs a route failover, the Primary Engine goes
 offline and the traffic is routed through the Secondary Engine. If defined,
-a reserved public IP is also moved to the Secondary Engine.
+reserved public IP(s) are also moved to the Secondary Engine.
 
 Once the issue that caused the failover has been resolved, the system must be
 put to HA ready state manually to recover back to the situation where the
 Primary Engine is handling traffic. Perform the following steps:
 
 1. Put the Primary Engine online to have the script update OCI route tables
-   to point to the Primary Engine again (and move the public IP back if defined)
+   to point to the Primary Engine again (and move the public IP(s) back if defined)
 2. Make sure that VPNs work with both Engines
 3. Make sure that remote probe hosts are accessible through VPNs
 4. Make sure that the Primary Engine probe from the Secondary Engine is
@@ -562,12 +583,15 @@ If the script fails to authenticate to OCI APIs:
 
 #### Reserved Public IP Issues
 
-If the public IP is not moving during failover:
+If the public IP(s) are not moving during failover:
 
-1. Verify `reserved_public_ip_id` is correctly configured
-2. Check the reserved public IP is not assigned to any ephemeral allocation
-3. Verify IAM policies allow `manage public-ips` permission
-4. Check logs for 409 conflict errors (may indicate ephemeral IP conflict)
+1. Verify `reserved_public_ip_<name>` entries use valid IP triplet format
+   (`public_ip,primary_private_ip,secondary_private_ip`)
+2. Verify the private IPs in each triplet are assigned to VNICs on the
+   respective instances
+3. Check the reserved public IP(s) are not assigned to any ephemeral allocation
+4. Verify IAM policies allow `manage public-ips` permission
+5. Check logs for 409 conflict errors (may indicate ephemeral IP conflict)
 
 #### Route Table Update Issues
 
@@ -582,7 +606,7 @@ If routes are not updating during failover:
 
 If the script cannot find VNICs or private IPs:
 
-1. Verify `internal_nic_idx` and `wan_nic_idx` are correct
+1. Verify `internal_nic_idx` is correct (and `wan_nic_idx` if using legacy format)
 2. Check VNICs are attached to the instances
 3. Verify private IPs are assigned to the VNICs
 4. Check VNIC attachment lifecycle state is "ATTACHED"
@@ -594,7 +618,7 @@ If you are familiar with the AWS HA script, key differences include:
 1. **Authentication**: Uses OCI Instance Principal instead of IAM roles
 2. **Network Resources**: VNICs and Private IPs instead of ENIs
 3. **Identifiers**: OCIDs instead of AWS resource IDs (i-xxx, rtb-xxx)
-4. **Moveable public IP**: Support for moveable public IPs
+4. **Moveable public IP(s)**: Support for moving one or more reserved public IPs
 5. **API**: Direct REST API calls instead of boto3 library
 6. **Tags**: Freeform tags instead of EC2 tags
 
