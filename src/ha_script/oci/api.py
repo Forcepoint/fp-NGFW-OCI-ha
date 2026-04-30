@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 import urllib.parse
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -23,6 +24,9 @@ LOGGER = logging.getLogger(__name__)
 OCIClients = tuple['ComputeClient', 'VirtualNetworkClient']
 
 OCI_API_VERSION = "20160918"
+
+WR_POLL_INTERVAL = 1   # seconds between work request polls
+WR_TIMEOUT = 120       # maximum wait in seconds
 
 
 @dataclass
@@ -100,13 +104,97 @@ class OCIClient:
             data=json.dumps(body) if body else None,
             timeout=30
         )
+        if response.status_code == 401:
+            LOGGER.warning(
+                "OCI API returned 401, refreshing token and retrying: "
+                "%s %s", method, url,
+            )
+            self.request_signer.invalidate()
+            response = self._session.request(
+                method=method,
+                url=url,
+                auth=self.request_signer,
+                data=json.dumps(body) if body else None,
+                timeout=30,
+            )
         if not response.ok:
             LOGGER.error(
                 "OCI API request failed: %s %s - Status: %d - Response: %s",
                 method, url, response.status_code, response.text
             )
         response.raise_for_status()
+        if method in ("PUT", "PATCH", "POST", "DELETE"):
+            self._poll_work_request(response)
         return response
+
+    def _poll_work_request(self, response: requests.Response) -> None:
+        """Poll an OCI work request until it completes.
+
+        OCI mutating operations may be asynchronous.  When the response
+        includes an opc-work-request-id header, the caller must poll the
+        work-request endpoint until the operation reaches a terminal
+        state (SUCCEEDED, FAILED, or CANCELED).  The Retry-After header,
+        when present, dictates the polling interval.
+
+        https://docs.oracle.com/en-us/iaas/Content/API/Concepts/workrequests.htm
+        """
+        wr_id = response.headers.get("opc-work-request-id")
+        if not wr_id:
+            return
+
+        url = f"https://{self.host}/{OCI_API_VERSION}/workRequests/{wr_id}"
+        deadline = time.monotonic() + WR_TIMEOUT
+        LOGGER.debug("Polling work request %s", wr_id)
+
+        while time.monotonic() < deadline:
+            poll_resp = self._session.get(
+                url,
+                auth=self.request_signer,
+                timeout=30,
+            )
+            if poll_resp.status_code == 401:
+                LOGGER.warning(
+                    "Work request poll returned 401, refreshing token "
+                    "and retrying: %s", url,
+                )
+                self.request_signer.invalidate()
+                poll_resp = self._session.get(
+                    url,
+                    auth=self.request_signer,
+                    timeout=30,
+                )
+            if not poll_resp.ok:
+                LOGGER.error(
+                    "Work request poll failed: "
+                    "%s - Status: %d - Response: %s",
+                    url, poll_resp.status_code, poll_resp.text,
+                )
+            poll_resp.raise_for_status()
+
+            status = poll_resp.json().get("status", "")
+            if status == "SUCCEEDED":
+                LOGGER.debug("Work request %s succeeded", wr_id)
+                return
+            if status in ("FAILED", "CANCELED"):
+                raise requests.HTTPError(
+                    f"Work request {wr_id} {status}",
+                    response=poll_resp,
+                )
+
+            try:
+                retry_after = int(poll_resp.headers["Retry-After"])
+            except (KeyError, ValueError, TypeError) as err:
+                LOGGER.debug("Unable to read Retry-After header: %s", str(err))
+                retry_after = WR_POLL_INTERVAL
+
+            LOGGER.debug("Work request status: %s, retrying in %ds...",
+                         status, retry_after)
+            time.sleep(retry_after)
+
+        raise requests.HTTPError(
+            f"Work request {wr_id} timed out after {WR_TIMEOUT}s",
+            response=response,
+        )
 
     def get(self, path: str, params: Optional[dict[str, str]] = None) -> Any:
         response = self._request("GET", path, params=params)
@@ -589,7 +677,7 @@ def move_public_ip(
                 f"'{local_net_ctx.wan_ip_id}'.")
     try:
         vcn_client.update_public_ip(public_ip_id, local_net_ctx.wan_ip_id)
-    except requests.exceptions.HTTPError as e:
+    except requests.HTTPError as e:
         if e.response is None:
             raise
         if e.response.status_code != 409:

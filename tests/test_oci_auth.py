@@ -338,6 +338,27 @@ def test_signer_get(request_signer, token_active):
 
 
 @responses.activate
+def test_signer_invalidate(crypto_materials, token_active, token_next):
+    """RequestSigner.invalidate() clears cached credentials and token."""
+    responses.add(responses.POST, DEFAULT_TOKEN_URL, json=token_active)
+    responses.add(responses.POST, DEFAULT_TOKEN_URL, json=token_next)
+
+    with patch_instance_metadata(crypto_materials):
+        signer = auth.RequestSigner()
+        req = requests.Request("GET", "http://localhost/api").prepare()
+
+        # First call fetches token_active
+        signed = signer(req)
+        assert f"ST${token_active['token']}" in signed.headers["authorization"]
+
+        # Invalidate and call again — should fetch token_next
+        signer.invalidate()
+        signed = signer(req)
+        assert f"ST${token_next['token']}" in signed.headers["authorization"]
+        assert len(responses.calls) == 2
+
+
+@responses.activate
 def test_signer_post(request_signer, token_active):
     url = "http://localhost/api"
     responses.add(responses.POST, DEFAULT_TOKEN_URL, json=token_active)

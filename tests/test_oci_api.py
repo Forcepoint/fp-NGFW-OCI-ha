@@ -5,6 +5,8 @@ import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
+import responses
 from conftest import OCIConf
 
 from ha_script.config import HAScriptConfig
@@ -304,3 +306,39 @@ def test_get_oci_clients_propagates_exception_with_cause(caplog):
     ]
     assert len(critical_records) == 1
     assert "auth service unreachable" in critical_records[0].message
+
+
+INSTANCE_URL = (
+    "https://iaas.us-phoenix-1.oraclecloud.com/20160918/instances/i-1"
+)
+
+
+@responses.activate
+def test_request_retries_on_401(oci_client, caplog):
+    """OCI API request retries once after 401 with token refresh."""
+    responses.add(responses.GET, INSTANCE_URL,
+                  json={"error": "unauthorized"}, status=401)
+    responses.add(responses.GET, INSTANCE_URL,
+                  json={"id": "i-1"}, status=200)
+
+    with caplog.at_level(logging.WARNING, logger="ha_script.oci.api"):
+        result = oci_client.get("/20160918/instances/i-1")
+
+    assert result == {"id": "i-1"}
+    oci_client.request_signer.invalidate.assert_called_once()
+    assert len(responses.calls) == 2
+    assert "401" in caplog.text
+
+
+@responses.activate
+def test_request_fails_after_401_retry(oci_client):
+    """OCI API request raises after 401 retry also fails."""
+    responses.add(responses.GET, INSTANCE_URL,
+                  json={"error": "unauthorized"}, status=401)
+    responses.add(responses.GET, INSTANCE_URL,
+                  json={"error": "unauthorized"}, status=401)
+
+    with pytest.raises(requests.HTTPError):
+        oci_client.get("/20160918/instances/i-1")
+
+    oci_client.request_signer.invalidate.assert_called_once()
