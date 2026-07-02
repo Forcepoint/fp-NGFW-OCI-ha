@@ -110,9 +110,7 @@ def test_create_local_net_context_success(oci_conf: OCIConf) -> None:
         assert ctx.internal_nic_id == oci_conf.primary_vnic_ids[0]
         assert ctx.internal_ip == oci_conf.primary_ips[0]
         assert ctx.internal_ip_id == oci_conf.primary_private_ip_ids[0]
-        assert ctx.wan_nic_id == oci_conf.primary_vnic_ids[1]
-        assert ctx.wan_ip == oci_conf.primary_ips[1]
-        assert ctx.wan_ip_id == oci_conf.primary_private_ip_ids[1]
+        assert ctx.public_ip_targets == []
 
 
 def test_get_route_table_info_success(oci_conf: OCIConf) -> None:

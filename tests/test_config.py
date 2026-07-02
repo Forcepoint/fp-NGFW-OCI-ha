@@ -37,7 +37,7 @@ def test_load_config_instance_tags(read_custom_properties_file, caplog):
     assert config.secondary_instance_id == "ocid1.instance.oc1.iad.bbbb"
     assert config.internal_nic_idx == 1
     assert config.wan_nic_idx == 1
-    assert not config.reserved_public_ip_id
+    assert not config.reserved_public_ips
 
     assert len(caplog.records) == 1
 
@@ -73,7 +73,7 @@ def test_load_config_custom_properties(read_custom_properties_file, caplog):
     assert config.secondary_instance_id == "ocid1.instance.oc1.iad.bbbb"
     assert config.internal_nic_idx == 1
     assert config.wan_nic_idx == 1
-    assert not config.reserved_public_ip_id
+    assert not config.reserved_public_ips
 
     assert len(caplog.records) == 1
 
@@ -110,7 +110,7 @@ def test_load_config_merged_sources(read_custom_properties_file, caplog):
     assert config.secondary_instance_id == "ocid1.instance.oc1.iad.bbbb"
     assert config.internal_nic_idx == 1
     assert config.wan_nic_idx == 1
-    assert not config.reserved_public_ip_id
+    assert not config.reserved_public_ips
 
     assert len(caplog.records) == 1
 
@@ -274,3 +274,109 @@ def test_remote_probe_ip_comma_separated_invalid_entry(
         })
     assert "bad-addr" in str(exc_info.value)
     assert "192.168.1.1,bad-addr" not in str(exc_info.value)
+
+
+@patch("ha_script.config._read_custom_properties_file")
+def test_reserved_public_ip_legacy_format_valid(
+    read_custom_properties_file,
+):
+    read_custom_properties_file.return_value = {}
+    config = load_config({
+        **MOCK_MANDATORY_TAGS,
+        "reserved_public_ip_id": "ocid1.publicip.oc1.iad.aaaa",
+    })
+    assert config.reserved_public_ips == {"id": "ocid1.publicip.oc1.iad.aaaa"}
+
+
+@patch("ha_script.config._read_custom_properties_file")
+def test_reserved_public_ip_legacy_format_invalid(
+    read_custom_properties_file,
+):
+    read_custom_properties_file.return_value = {}
+    with pytest.raises(HAScriptConfigError) as exc_info:
+        load_config({
+            **MOCK_MANDATORY_TAGS,
+            "reserved_public_ip_id": "not-an-ocid",
+        })
+    assert "not-an-ocid" in str(exc_info.value)
+
+
+@patch("ha_script.config._read_custom_properties_file")
+def test_reserved_public_ip_triplet_valid(
+    read_custom_properties_file,
+):
+    read_custom_properties_file.return_value = {}
+    config = load_config({
+        **MOCK_MANDATORY_TAGS,
+        "reserved_public_ip_vpn": "203.0.113.10,10.0.1.5,10.0.2.5",
+    })
+    assert config.reserved_public_ips == {
+        "vpn": "203.0.113.10,10.0.1.5,10.0.2.5"
+    }
+
+
+@patch("ha_script.config._read_custom_properties_file")
+def test_reserved_public_ip_triplet_whitespace_valid(
+    read_custom_properties_file,
+):
+    read_custom_properties_file.return_value = {}
+    config = load_config({
+        **MOCK_MANDATORY_TAGS,
+        "reserved_public_ip_vpn": "203.0.113.10, 10.0.12.10, 10.0.22.10",
+    })
+    assert config.reserved_public_ips == {
+        "vpn": "203.0.113.10, 10.0.12.10, 10.0.22.10"
+    }
+
+
+@patch("ha_script.config._read_custom_properties_file")
+def test_reserved_public_ip_two_parts_rejected(
+    read_custom_properties_file,
+):
+    read_custom_properties_file.return_value = {}
+    with pytest.raises(HAScriptConfigError) as exc_info:
+        load_config({
+            **MOCK_MANDATORY_TAGS,
+            "reserved_public_ip_vpn": "203.0.113.10,10.0.1.5",
+        })
+    assert "3 comma-separated" in str(exc_info.value)
+
+
+@patch("ha_script.config._read_custom_properties_file")
+def test_reserved_public_ip_invalid_ip_address(
+    read_custom_properties_file,
+):
+    read_custom_properties_file.return_value = {}
+    with pytest.raises(HAScriptConfigError) as exc_info:
+        load_config({
+            **MOCK_MANDATORY_TAGS,
+            "reserved_public_ip_vpn": "not-an-ip,10.0.1.5,10.0.2.5",
+        })
+    assert "invalid IP address" in str(exc_info.value)
+    assert "not-an-ip" in str(exc_info.value)
+
+
+@patch("ha_script.config._read_custom_properties_file")
+def test_reserved_public_ip_empty_parts(
+    read_custom_properties_file,
+):
+    read_custom_properties_file.return_value = {}
+    with pytest.raises(HAScriptConfigError) as exc_info:
+        load_config({
+            **MOCK_MANDATORY_TAGS,
+            "reserved_public_ip_vpn": "203.0.113.10,,10.0.2.5",
+        })
+    assert "invalid IP address" in str(exc_info.value)
+
+
+@patch("ha_script.config._read_custom_properties_file")
+def test_reserved_public_ip_all_empty(
+    read_custom_properties_file,
+):
+    read_custom_properties_file.return_value = {}
+    with pytest.raises(HAScriptConfigError) as exc_info:
+        load_config({
+            **MOCK_MANDATORY_TAGS,
+            "reserved_public_ip_vpn": ",,",
+        })
+    assert "invalid IP address" in str(exc_info.value)

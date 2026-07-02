@@ -89,9 +89,7 @@ def test_secondary_takeover(
         internal_nic_id=secondary_vnic_id,
         internal_ip=secondary_ip,
         internal_ip_id=oci_conf.secondary_private_ip_ids[0],
-        wan_nic_id=oci_conf.secondary_vnic_ids[1],
-        wan_ip=oci_conf.secondary_ips[1],
-        wan_ip_id=oci_conf.secondary_private_ip_ids[1]
+        public_ip_targets=[]
     )
     create_local_net_context.return_value = local_net_ctx
 
@@ -176,9 +174,7 @@ def test_secondary_takeover_with_oci_mock(
         internal_nic_id=secondary_vnic_id,
         internal_ip=secondary_ip,
         internal_ip_id=oci_conf.secondary_private_ip_ids[0],
-        wan_nic_id=oci_conf.secondary_vnic_ids[1],
-        wan_ip=oci_conf.secondary_ips[1],
-        wan_ip_id=oci_conf.secondary_private_ip_ids[1]
+        public_ip_targets=[]
     )
     create_local_net_context.return_value = local_net_ctx
 
@@ -262,9 +258,7 @@ def test_secondary_no_takeover_when_primary_online(
         internal_nic_id=secondary_vnic_id,
         internal_ip=secondary_ip,
         internal_ip_id=oci_conf.secondary_private_ip_ids[0],
-        wan_nic_id=oci_conf.secondary_vnic_ids[1],
-        wan_ip=oci_conf.secondary_ips[1],
-        wan_ip_id=oci_conf.secondary_private_ip_ids[1]
+        public_ip_targets=[]
     )
     create_local_net_context.return_value = local_net_ctx
 
@@ -324,9 +318,7 @@ def test_secondary_takeover_on_blackhole_route_with_oci_mock(
         internal_nic_id=secondary_vnic_id,
         internal_ip=secondary_ip,
         internal_ip_id=oci_conf.secondary_private_ip_ids[0],
-        wan_nic_id=oci_conf.secondary_vnic_ids[1],
-        wan_ip=oci_conf.secondary_ips[1],
-        wan_ip_id=oci_conf.secondary_private_ip_ids[1],
+        public_ip_targets=[],
     )
     create_local_net_context.return_value = local_net_ctx
     clients = (oci_conf.compute_client, oci_conf.vcn_client)

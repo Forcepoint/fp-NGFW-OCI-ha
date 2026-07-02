@@ -109,6 +109,15 @@ class MockVirtualNetworkClient:
                 return public_ip.copy()
         raise ValueError(f"Public IP {public_ip_id} not found")
 
+    def get_public_ip_by_ip_address(self, ip_address: str) -> Dict:
+        """Get public IP by its IP address"""
+        for public_ip in self.state.public_ips:
+            if public_ip.get('ipAddress') == ip_address:
+                return public_ip.copy()
+        raise ValueError(
+            f"No public IP with address {ip_address}"
+        )
+
     def get_public_ip_by_private_ip_id(self, private_ip_id: str) -> Dict:
         """Get public IP from private IP address"""
         for public_ip in self.state.public_ips:
@@ -166,7 +175,10 @@ class OCIConf:
     secondary_ips: List[str]
     other_vnic_id: str
     other_private_ip_id: str
+    primary_private_ip_wan_2_id: str
+    secondary_private_ip_wan_2_id: str
     reserved_public_ip_id: str
+    reserved_public_ip_id_2: str
 
 
 @pytest.fixture
@@ -250,8 +262,10 @@ def oci_conf() -> OCIConf:
     # Create private IPs
     primary_private_ip_internal_id = "ocid1.privateip.oc1.iad.primary_internal"
     primary_private_ip_wan_id = "ocid1.privateip.oc1.iad.primary_wan"
+    primary_private_ip_wan_2_id = "ocid1.privateip.oc1.iad.primary_wan_2"
     secondary_private_ip_internal_id = "ocid1.privateip.oc1.iad.secondary_internal"
     secondary_private_ip_wan_id = "ocid1.privateip.oc1.iad.secondary_wan"
+    secondary_private_ip_wan_2_id = "ocid1.privateip.oc1.iad.secondary_wan_2"
     other_private_ip_id = "ocid1.privateip.oc1.iad.other"
 
     state.private_ips = [
@@ -268,6 +282,12 @@ def oci_conf() -> OCIConf:
             'isPrimary': True
         },
         {
+            'id': primary_private_ip_wan_2_id,
+            'vnicId': primary_vnic_wan_id,
+            'ipAddress': '10.0.12.11',
+            'isPrimary': False
+        },
+        {
             'id': secondary_private_ip_internal_id,
             'vnicId': secondary_vnic_internal_id,
             'ipAddress': '10.0.21.10',
@@ -278,6 +298,12 @@ def oci_conf() -> OCIConf:
             'vnicId': secondary_vnic_wan_id,
             'ipAddress': '10.0.22.10',
             'isPrimary': True
+        },
+        {
+            'id': secondary_private_ip_wan_2_id,
+            'vnicId': secondary_vnic_wan_id,
+            'ipAddress': '10.0.22.11',
+            'isPrimary': False
         },
         {
             'id': other_private_ip_id,
@@ -355,8 +381,9 @@ def oci_conf() -> OCIConf:
         }
     ]
 
-    # Create reserved public IP
+    # Create reserved public IPs
     reserved_public_ip_id = "ocid1.publicip.oc1.iad.reserved"
+    reserved_public_ip_id_2 = "ocid1.publicip.oc1.iad.reserved2"
     state.public_ips = [
         {
             'id': reserved_public_ip_id,
@@ -364,6 +391,13 @@ def oci_conf() -> OCIConf:
             'ipAddress': '203.0.113.10',
             'lifetime': 'RESERVED',
             'assignedEntityId': primary_private_ip_wan_id
+        },
+        {
+            'id': reserved_public_ip_id_2,
+            'compartmentId': state.compartment_id,
+            'ipAddress': '203.0.113.11',
+            'lifetime': 'RESERVED',
+            'assignedEntityId': primary_private_ip_wan_2_id
         }
     ]
 
@@ -388,7 +422,10 @@ def oci_conf() -> OCIConf:
         secondary_ips=['10.0.21.10', '10.0.22.10'],
         other_vnic_id=other_vnic_id,
         other_private_ip_id=other_private_ip_id,
-        reserved_public_ip_id=reserved_public_ip_id
+        primary_private_ip_wan_2_id=primary_private_ip_wan_2_id,
+        secondary_private_ip_wan_2_id=secondary_private_ip_wan_2_id,
+        reserved_public_ip_id=reserved_public_ip_id,
+        reserved_public_ip_id_2=reserved_public_ip_id_2
     )
 
 

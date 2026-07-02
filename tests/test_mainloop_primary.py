@@ -58,9 +58,7 @@ def test_online(
         internal_nic_id=primary_vnic_id,
         internal_ip=primary_ip,
         internal_ip_id=oci_conf.primary_private_ip_ids[0],
-        wan_nic_id=oci_conf.primary_vnic_ids[1],
-        wan_ip=oci_conf.primary_ips[1],
-        wan_ip_id=oci_conf.primary_private_ip_ids[1]
+        public_ip_targets=[]
     )
     create_local_net_context.return_value = local_net_ctx
 
@@ -159,9 +157,7 @@ def test_offline_to_online_success(
         internal_nic_id=primary_vnic_id,
         internal_ip=primary_ip,
         internal_ip_id=oci_conf.primary_private_ip_ids[0],
-        wan_nic_id=oci_conf.primary_vnic_ids[1],
-        wan_ip=oci_conf.primary_ips[1],
-        wan_ip_id=oci_conf.primary_private_ip_ids[1]
+        public_ip_targets=[]
     )
     create_local_net_context.return_value = local_net_ctx
 
@@ -230,9 +226,7 @@ def test_offline_to_online_success_with_oci_mock(
         internal_nic_id=primary_vnic_id,
         internal_ip=primary_ip,
         internal_ip_id=oci_conf.primary_private_ip_ids[0],
-        wan_nic_id=oci_conf.primary_vnic_ids[1],
-        wan_ip=oci_conf.primary_ips[1],
-        wan_ip_id=oci_conf.primary_private_ip_ids[1]
+        public_ip_targets=[]
     )
     create_local_net_context.return_value = primary_net_ctx
 
@@ -241,9 +235,7 @@ def test_offline_to_online_success_with_oci_mock(
         internal_nic_id=oci_conf.secondary_vnic_ids[0],
         internal_ip=secondary_ip,
         internal_ip_id=oci_conf.secondary_private_ip_ids[0],
-        wan_nic_id=oci_conf.secondary_vnic_ids[1],
-        wan_ip=oci_conf.secondary_ips[1],
-        wan_ip_id=oci_conf.secondary_private_ip_ids[1]
+        public_ip_targets=[]
     )
     api.update_route_table(config, clients, oci_conf.protected_route_table_id,
                            "0.0.0.0/0", secondary_net_ctx)
@@ -333,9 +325,7 @@ def test_secondary_takeover(
         internal_nic_id=primary_vnic_id,
         internal_ip=primary_ip,
         internal_ip_id=oci_conf.primary_private_ip_ids[0],
-        wan_nic_id=oci_conf.primary_vnic_ids[1],
-        wan_ip=oci_conf.primary_ips[1],
-        wan_ip_id=oci_conf.primary_private_ip_ids[1]
+        public_ip_targets=[]
     )
     create_local_net_context.return_value = local_net_ctx
 
@@ -412,9 +402,7 @@ def test_online_to_offline_success(
         internal_nic_id=primary_vnic_id,
         internal_ip=primary_ip,
         internal_ip_id=oci_conf.primary_private_ip_ids[0],
-        wan_nic_id=oci_conf.primary_vnic_ids[1],
-        wan_ip=oci_conf.primary_ips[1],
-        wan_ip_id=oci_conf.primary_private_ip_ids[1]
+        public_ip_targets=[]
     )
     create_local_net_context.return_value = local_net_ctx
 
@@ -489,9 +477,7 @@ def test_fail_to_change_status(
         internal_nic_id=primary_vnic_id,
         internal_ip=primary_ip,
         internal_ip_id=oci_conf.primary_private_ip_ids[0],
-        wan_nic_id=oci_conf.primary_vnic_ids[1],
-        wan_ip=oci_conf.primary_ips[1],
-        wan_ip_id=oci_conf.primary_private_ip_ids[1]
+        public_ip_targets=[]
     )
     create_local_net_context.return_value = local_net_ctx
 

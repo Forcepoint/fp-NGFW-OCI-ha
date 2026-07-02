@@ -103,25 +103,24 @@ def primary_main_loop_handler(config: HAScriptConfig, clients: api.OCIClients,
             ctx.prev_local_status = local_status
             ctx.display_info_needed = True
 
-    need_public_ip_move = False
-    public_ip, public_ip_assignee_id = None, None
-
-    if config.reserved_public_ip_id:
-        public_ip, public_ip_assignee_id = api.resolve_public_ip(config,
-                                                                 clients)
-        need_public_ip_move = (
-            local_status == "online"
-            and public_ip_assignee_id != local_net_ctx.wan_ip_id
-        )
+    public_ips_to_move: list[tuple[str, str, str]] = []
+    for pub_id, target_id, ip_addr in local_net_ctx.public_ip_targets:
+        try:
+            assignee = api.resolve_public_ip(clients, pub_id)
+        except Exception as e:
+            LOGGER.warning("Failed to resolve public IP '%s': %s", ip_addr, e)
+            continue
+        if local_status == "online" and assignee != target_id:
+            public_ips_to_move.append((pub_id, target_id, ip_addr))
 
     if (
-        not need_public_ip_move and
+        not public_ips_to_move and
         local_status == "online" and
         not primary_check_remote_hosts(config, ctx)
     ):
         # We failed to reach all the configured remote IP addressed several
         # times (see config.probe_max_fail). We set the primary offline so that
-        # the secondary takes over. In case the public IP needs to be moved,
+        # the secondary takes over. In case public IP(s) need to be moved,
         # delay remote check to next iteration as remote is unreachable now.
         local_status = "offline"
         set_local_status(config, local_status)
@@ -206,16 +205,14 @@ def primary_main_loop_handler(config: HAScriptConfig, clients: api.OCIClients,
                 alert=True
             )
 
-    if (
-        need_public_ip_move
-        and api.move_public_ip(config, clients, local_net_ctx)
-    ):
-        send_notification_to_smc(
-            config,
-            f"Public IP address '{public_ip}' moved to primary "
-            f"'{config.primary_instance_id}'.",
-            alert=True
-        )
+    for pub_id, target_id, ip_addr in public_ips_to_move:
+        if api.move_public_ip(config, clients, pub_id, target_id):
+            send_notification_to_smc(
+                config,
+                f"Public IP address '{ip_addr}' moved to primary "
+                f"'{config.primary_instance_id}'.",
+                alert=True
+            )
 
 
 def secondary_main_loop_handler(config: HAScriptConfig,
@@ -283,19 +280,17 @@ def secondary_main_loop_handler(config: HAScriptConfig,
     tcp_probe_fails = config.probe_enabled and not tcp_probe(
         config, primary_ip_addresses, config.probe_port, ctx)
 
-    need_public_ip_move = False
-    public_ip, public_ip_assignee_id = None, None
-    if config.reserved_public_ip_id:
-        public_ip, public_ip_assignee_id = api.resolve_public_ip(config,
-                                                                 clients)
-        need_public_ip_move = (
-            local_status == "online"
-            and public_ip_assignee_id != local_net_ctx.wan_ip_id
-            and (
-                tcp_probe_fails or
-                primary_status == "offline"
-            )
-        )
+    public_ips_to_move: list[tuple[str, str, str]] = []
+    for pub_id, target_id, ip_addr in local_net_ctx.public_ip_targets:
+        try:
+            assignee = api.resolve_public_ip(clients, pub_id)
+        except Exception as e:
+            LOGGER.warning("Failed to resolve public IP '%s': %s", ip_addr, e)
+            continue
+        if (local_status == "online"
+                and assignee != target_id
+                and (tcp_probe_fails or primary_status == "offline")):
+            public_ips_to_move.append((pub_id, target_id, ip_addr))
 
     ngfw_instance_ids = [
         config.primary_instance_id,
@@ -332,7 +327,7 @@ def secondary_main_loop_handler(config: HAScriptConfig,
             primary_status
         )
 
-        if ctx.display_info_needed or need_reroute or need_public_ip_move:
+        if ctx.display_info_needed or need_reroute or public_ips_to_move:
             LOGGER.info(
                 "route_table_id: %s, route_dest: %s, route_state: %s, "
                 "route_table_target: %s, local_ip: %s, primary_status: %s, "
@@ -359,16 +354,14 @@ def secondary_main_loop_handler(config: HAScriptConfig,
                 alert=True
             )
 
-    if (
-        need_public_ip_move
-        and api.move_public_ip(config, clients, local_net_ctx)
-    ):
-        send_notification_to_smc(
-            config,
-            f"Public IP address '{public_ip}' moved to secondary "
-            f"'{config.secondary_instance_id}'.",
-            alert=True
-        )
+    for pub_id, target_id, ip_addr in public_ips_to_move:
+        if api.move_public_ip(config, clients, pub_id, target_id):
+            send_notification_to_smc(
+                config,
+                f"Public IP address '{ip_addr}' moved to "
+                f"secondary '{config.secondary_instance_id}'.",
+                alert=True
+            )
 
 
 def mainloop(config: HAScriptConfig, clients: api.OCIClients) -> None:
@@ -385,7 +378,7 @@ def mainloop(config: HAScriptConfig, clients: api.OCIClients) -> None:
     LOGGER.info("Role is '%s'", "primary" if primary else "secondary")
 
     ctx = HAScriptContext()
-    local_net_ctx = api.create_local_net_context(config, clients)
+    local_net_ctx = api.create_local_net_context(config, clients, primary)
 
     while is_running():
         try:
