@@ -10,6 +10,7 @@ import responses
 from conftest import OCIConf
 
 from ha_script.config import HAScriptConfig
+from ha_script.exceptions import HAScriptError
 from ha_script.oci.api import (
     get_config_tag_value,
     get_config_tags,
@@ -111,6 +112,69 @@ def test_create_local_net_context_success(oci_conf: OCIConf) -> None:
         assert ctx.internal_ip == oci_conf.primary_ips[0]
         assert ctx.internal_ip_id == oci_conf.primary_private_ip_ids[0]
         assert ctx.public_ip_targets == []
+        # The remote probe source defaults to the internal VNIC IP.
+        assert ctx.remote_probe_src_ip == oci_conf.primary_ips[0]
+
+
+def test_create_local_net_context_remote_probe_nic(oci_conf: OCIConf) -> None:
+    """remote_probe_nic_idx selects another VNIC's private IP."""
+    config = HAScriptConfig(
+        route_table_id=oci_conf.protected_route_table_id,
+        primary_instance_id=oci_conf.primary_instance_id,
+        secondary_instance_id=oci_conf.secondary_instance_id,
+        internal_nic_idx=0,
+        wan_nic_idx=1,
+        remote_probe_nic_idx=1,
+    )
+
+    clients = (oci_conf.compute_client, oci_conf.vcn_client)
+
+    with patch('ha_script.oci.metadata.get_vnics') as mock_get_vnics:
+        mock_get_vnics.return_value = [
+            {
+                'vnicId': oci_conf.primary_vnic_ids[0],
+                'privateIp': oci_conf.primary_ips[0]
+            },
+            {
+                'vnicId': oci_conf.primary_vnic_ids[1],
+                'privateIp': oci_conf.primary_ips[1]
+            }
+        ]
+
+        ctx = create_local_net_context(config, clients)
+
+        assert ctx.remote_probe_src_ip == oci_conf.primary_ips[1]
+
+
+def test_create_local_net_context_remote_probe_nic_out_of_bounds(
+    oci_conf: OCIConf,
+) -> None:
+    config = HAScriptConfig(
+        route_table_id=oci_conf.protected_route_table_id,
+        primary_instance_id=oci_conf.primary_instance_id,
+        secondary_instance_id=oci_conf.secondary_instance_id,
+        internal_nic_idx=0,
+        wan_nic_idx=1,
+        remote_probe_nic_idx=5,
+    )
+
+    clients = (oci_conf.compute_client, oci_conf.vcn_client)
+
+    with patch('ha_script.oci.metadata.get_vnics') as mock_get_vnics:
+        mock_get_vnics.return_value = [
+            {
+                'vnicId': oci_conf.primary_vnic_ids[0],
+                'privateIp': oci_conf.primary_ips[0]
+            },
+            {
+                'vnicId': oci_conf.primary_vnic_ids[1],
+                'privateIp': oci_conf.primary_ips[1]
+            }
+        ]
+
+        with pytest.raises(HAScriptError,
+                           match="Failed to find remote probe NIC at index 5"):
+            create_local_net_context(config, clients)
 
 
 def test_get_route_table_info_success(oci_conf: OCIConf) -> None:
