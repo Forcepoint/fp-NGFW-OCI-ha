@@ -16,7 +16,10 @@ from conftest import OCIConf
 from ha_script.oci import api
 from ha_script.config import HAScriptConfig
 from ha_script.context import HAScriptContext
-from ha_script.mainloop import primary_main_loop_handler
+from ha_script.mainloop import (
+    primary_check_remote_hosts,
+    primary_main_loop_handler,
+)
 
 
 @patch("ha_script.mainloop.send_notification_to_smc")
@@ -503,3 +506,29 @@ def test_fail_to_change_status(
     # This is the important part: prev status remains "online" so that
     # the status change is retried on the next iteration
     assert ctx.prev_local_status == "online"
+
+
+@patch("ha_script.mainloop.tcp_probe")
+def test_primary_check_remote_hosts_uses_remote_probe_src_ip(tcp_probe):
+    """The remote probe binds to local_net_ctx.remote_probe_src_ip."""
+    config = HAScriptConfig(
+        route_table_id="ocid1.routetable.oc1.iad.aaaa",
+        primary_instance_id="ocid1.instance.oc1.iad.aaaa",
+        secondary_instance_id="ocid1.instance.oc1.iad.bbbb",
+        remote_probe_enabled=True,
+        remote_probe_ip="198.51.100.1",
+        remote_probe_port=80,
+    )
+    ctx = HAScriptContext()
+    local_net_ctx = api.LocalNetContext(
+        internal_nic_id="vnic0",
+        internal_ip="10.0.0.10",
+        internal_ip_id="private-ip-ocid",
+        remote_probe_src_ip="10.0.0.20",
+    )
+    tcp_probe.return_value = True
+
+    assert primary_check_remote_hosts(config, ctx, local_net_ctx)
+    tcp_probe.assert_called_once_with(
+        config, ["198.51.100.1"], 80, ctx, source_ip="10.0.0.20",
+    )

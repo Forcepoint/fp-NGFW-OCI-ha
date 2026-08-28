@@ -42,6 +42,10 @@ class LocalNetContext:
     # Internal network private IP address OCID.
     internal_ip_id: str
 
+    # Source address the remote probe socket binds to. Resolved on
+    # startup from remote_probe_nic_idx.
+    remote_probe_src_ip: str = ""
+
     # [(public_ip_ocid, target_private_ip_ocid, public_ip_address), ...]
     public_ip_targets: list[tuple[str, str, str]] = field(default_factory=list)
 
@@ -474,6 +478,24 @@ def create_local_net_context(config: HAScriptConfig,
         for p in vcn_client.list_private_ips(v["vnicId"]):
             ip_to_id[p["ipAddress"]] = p["id"]
 
+    # The remote probe source address defaults to the internal VNIC IP;
+    # remote_probe_nic_idx selects another VNIC explicitly.
+    remote_probe_src_ip = internal_ip
+    if config.remote_probe_nic_idx >= 0:
+        try:
+            remote_probe_vnic = vnics[config.remote_probe_nic_idx]
+        except IndexError:
+            raise HAScriptError(
+                f"Failed to find remote probe NIC at index "
+                f"{config.remote_probe_nic_idx}"
+            )
+        remote_probe_src_ip = remote_probe_vnic.get("privateIp", "")
+        if not remote_probe_src_ip:
+            raise HAScriptError(
+                f"VNIC at index {config.remote_probe_nic_idx} missing "
+                f"privateIp"
+            )
+
     # Resolve public IP targets from config
     public_ip_targets: list[tuple[str, str, str]] = []
     for name, value in config.reserved_public_ips.items():
@@ -531,6 +553,7 @@ def create_local_net_context(config: HAScriptConfig,
         internal_nic_id=internal_nic_id,
         internal_ip=internal_ip,
         internal_ip_id=internal_ip_id,
+        remote_probe_src_ip=remote_probe_src_ip,
         public_ip_targets=public_ip_targets,
     )
     LOGGER.info("created local network context: %s", ctx)

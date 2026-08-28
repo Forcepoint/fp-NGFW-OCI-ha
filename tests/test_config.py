@@ -277,6 +277,29 @@ def test_remote_probe_ip_comma_separated_invalid_entry(
 
 
 @patch("ha_script.config._read_custom_properties_file")
+def test_load_config_remote_probe_nic_idx(read_custom_properties_file):
+    read_custom_properties_file.return_value = {}
+    config = load_config({
+        **MOCK_MANDATORY_TAGS,
+        "remote_probe_nic_idx": "2",
+    })
+    assert config.remote_probe_nic_idx == 2
+
+
+@patch("ha_script.config._read_custom_properties_file")
+def test_load_config_invalid_remote_probe_nic_idx(
+    read_custom_properties_file,
+):
+    read_custom_properties_file.return_value = {}
+    with pytest.raises(HAScriptConfigError) as exc_info:
+        load_config({
+            **MOCK_MANDATORY_TAGS,
+            "remote_probe_nic_idx": "-2",
+        })
+    assert "remote_probe_nic_idx" in str(exc_info.value)
+
+
+@patch("ha_script.config._read_custom_properties_file")
 def test_reserved_public_ip_legacy_format_valid(
     read_custom_properties_file,
 ):
